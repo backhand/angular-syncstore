@@ -59,9 +59,21 @@ Add event listeners:
 
 Supported events are:
 
-*update, delete, create*: argument to eventListener is the relevant store item
+*create*:
+    
+    eventListener(created, item)
 
-*error*: argument to eventListener is the error object
+*update*:
+
+    eventListener(updated, item)
+
+*delete*:
+    
+    eventListener(item)
+
+*error*:
+
+    eventListener(error)
 
 
 Remove listener:

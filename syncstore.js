@@ -203,7 +203,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             var toCreate = {};
             var toUpdate = {};
 
-            $rootScope.stores[storeId].forEach(function(item) {
+            $rootScope.stores[storeId].forEach(function(item, index) {
               if(item._local_id) {
                 // Still here, remove from toDelete list
                 delete toDelete[item._local_id];
@@ -213,9 +213,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
                 }
               } else {
                 // New item, add to toCreate list
-                var storeItem = new SyncStoreItem(item, idProperty);
-                localIds[storeItem._local_id] = storeItem;
-                toCreate[storeItem._local_id] = storeItem;
+                var newItem = new SyncStoreItem(item, idProperty);
+                $rootScope.stores[storeId][index] = newItem;
+                localIds[newItem._local_id] = newItem;
+                toCreate[newItem._local_id] = newItem;
               }
             });
 
@@ -223,7 +224,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             angular.forEach(toDelete, function(item, localId) {
               var params = {};
               params[idProperty] = item[idProperty];
-              item.$delete(params, function() {
+              resource.delete(params, function() {
                 self.emit('delete', item);
                 delete localIds[localId];
               });
@@ -231,23 +232,23 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
             // Call create on all toCreate entries
             angular.forEach(toCreate, function(item, localId) {
-              item.$save({}, function(result) {
-                self.emit('create', item);
+              resource.create(item, function(result) {
+                self.emit('create', result, item);
                 item.update(result).setUpdated();
               });
             });
 
             // Call update on all toUpdate entries
             angular.forEach(toUpdate, function(item, localId) {
-              item.$save({}, function(result) {
-                self.emit('update', item);
+              resource.save(item, function(result) {
+                self.emit('update', result, item);
                 item.update(result).setUpdated();
               });
             });
           };
 
           // Watch for changes, debounce to 3 secs
-          $rootScope.$watch('stores.' + this.storeId, _debounce(watcher, 3000), true);
+          $rootScope.$watch('stores.' + this.storeId, _debounce(watcher, 3000, true), true);
 
           // Do initial resource load
           this.resource.query({
