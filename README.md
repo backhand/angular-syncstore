@@ -3,13 +3,15 @@ angular-syncstore
 
 Auto-syncing data store for AngularJS
 
-** Usage **
+
+**Usage**
 
 Add SyncStore module to your app dependencies.  
 
      angular.module('app', ['SyncStore', ...
 
-** Create a store: **
+
+**Create a store:**
 
     contactsStore = $store({
       storeId: 'contacts', // Property name in $rootScope.stores
@@ -47,3 +49,21 @@ Add SyncStore module to your app dependencies.
 
 This will create a $rootScope.stores.contacts object, which will automatically sync changes to remote on updates,
 deletes, creates etc.
+
+
+**Events**
+
+Add event listeners:
+
+    contactsStore.on(eventName, eventListener);
+
+Supported events are:
+
+*update, delete, create*: argument to eventListener is the relevant store item
+
+*error*: argument to eventListener is the error object
+
+
+Remove listener:
+
+    contactsStore.off(eventName, eventListener);

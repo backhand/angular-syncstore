@@ -88,10 +88,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
           $rootScope.stores = [];
         }
 
-        function listStoreItem(item) {
-          // console.log(item._local_id, item);
-        }
-
         // Volatile local id, used for quick identification
         // of objects created locally
         var localIdSequence = 1;
@@ -120,6 +116,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         };
 
         function SyncStore(params) {
+          var self = this;
+
+          // Event listeners
+          setHiddenProperty(this, '_listeners', {});
+
           // Property name to store data under rootScope
           var storeId = params.storeId;
           setImmutableProperty(this, 'storeId', storeId, true);
@@ -163,7 +164,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
           var remoteIds = {};
 
           var onData = function(data) {
-            // console.log(data);
             var toRemove = angular.copy(remoteIds);
             angular.forEach(data, function(item) {
               var itemId = item[idProperty];
@@ -188,21 +188,17 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
                 // TODO: Check timestamp property and
                 //       select latest object
                 localItem.update(item).setUpdated();
-                // angular.copy(item, localItem);
               }
             });
 
             // Remove those deleted remotely
             angular.forEach(toRemove, function(item, localId) {
-              // console.log('remove %s', localId, item);
+              delete remoteIds[item[idProperty]];
+              delete localIds[localId];
             });
           };
 
           var watcher = function(newValue, oldValue) {
-            if(oldValue.length === 0) {
-              // console.log('Initial load');
-            }
-            
             var toDelete = angular.copy(localIds);
             var toCreate = {};
             var toUpdate = {};
@@ -225,24 +221,26 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
             // Call delete on all toDelete entries
             angular.forEach(toDelete, function(item, localId) {
-              // console.log('Delete %s', localId, item);
-              item.$delete({}, function() {
+              var params = {};
+              params[idProperty] = item[idProperty];
+              item.$delete(params, function() {
+                self.emit('delete', item);
                 delete localIds[localId];
               });
             });
 
             // Call create on all toCreate entries
             angular.forEach(toCreate, function(item, localId) {
-              // console.log('Create %s', localId, item);
               item.$save({}, function(result) {
+                self.emit('create', item);
                 item.update(result).setUpdated();
               });
             });
 
             // Call update on all toUpdate entries
             angular.forEach(toUpdate, function(item, localId) {
-              // console.log('Update %s', localId, item);
               item.$save({}, function(result) {
+                self.emit('update', item);
                 item.update(result).setUpdated();
               });
             });
@@ -256,9 +254,30 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             limit: this.threshold,
             offset: 0
           }, onData, function(err) {
-            // console.log('SyncStore: fetch error', err);
+            self.emit('err', err);
           });
         }
+
+        SyncStore.prototype.on = function(name, fn) {
+          this._listeners[name] = this._listeners[name] || [];
+          this._listeners[name].push(fn);
+        };
+
+        SyncStore.prototype.off = function(name, fn) {
+          if(this._listeners[name]) {
+            var index = this._listeners.indexOf(fn);
+            if(index >= 0) {
+              this._listeners.splice(index, 1);
+            }
+          }
+        };
+
+        SyncStore.prototype.emit = function(name) {
+          var eventArgs = Array.prototype.slice.call(arguments, 1);
+          for(var i in this._listeners[name]) {
+            this._listeners[name][i].apply(this, eventArgs);
+          }
+        };
 
         function syncStoreFactory(params) {
           return new SyncStore(params);
