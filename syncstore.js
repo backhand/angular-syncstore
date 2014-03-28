@@ -80,6 +80,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
     });
   }
 
+  function query(property, val) {
+    var q = {};
+    q[property] = val;
+    return q;
+  }
+
   angular.module('SyncStore', ['ngResource']).
     factory('$store', ['$resource', '$rootScope',
       function($resource, $rootScope) {
@@ -92,9 +98,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         // of objects created locally
         var localIdSequence = 1;
 
-        function SyncStoreItem(obj, idProperty) {
+        function SyncStoreItem(obj, syncStore) {
           setHiddenProperty(this, 'original', angular.copy(obj));
-          setImmutableProperty(this, '_id_property', idProperty);
+
+          syncStore.hiddenItemProperties.forEach(function(property) {
+            setHiddenProperty(this, property);
+          }, this);
+
+          setImmutableProperty(this, '_id_property', syncStore.idProperty);
           setImmutableProperty(this, '_local_id', localIdSequence++);
 
           angular.copy(obj, this);
@@ -120,6 +131,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
           // Event listeners
           setHiddenProperty(this, '_listeners', {});
+
+          // Item hidden properties - useful for volatile
+          // ui state like selected etc.
+          setHiddenProperty(this, 'hiddenItemProperties', params.hiddenItemProperties || []);
 
           // Property name to store data under rootScope
           var storeId = params.storeId;
@@ -163,39 +178,85 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
           // Map of remote ids existing locally
           var remoteIds = {};
 
-          var onData = function(data) {
+          var add = function(item) {
+            var itemId = item[idProperty];
+            var localItem = remoteIds[itemId];
+
+
+            // New item from remote - add it to store
+            if(!localItem) {
+              var storeItem = new SyncStoreItem(item, self);
+              localIds[storeItem._local_id] = storeItem;
+              remoteIds[itemId] = storeItem;
+
+              $rootScope.stores[storeId].push(storeItem);
+              self.emit('create_remote', storeItem);
+              return;
+            }
+
+            // Check if it was updated remote
+            if(!angular.equals(item, localItem)) {
+              // Overwrite local item
+              // TODO: Check timestamp property and
+              //       select latest object
+              localItem.update(item).setUpdated();
+              self.emit('update_remote', item, localItem);
+            }
+          };
+
+          var remove = function(item) {
+            var localId = item._local_id;
+
+            var deleteIndex = $rootScope.stores[storeId].indexOf(item);
+            $rootScope.stores[storeId].splice(deleteIndex, 1);
+            delete remoteIds[item[idProperty]];
+            delete localIds[localId];
+            self.emit('delete_remote', item);
+          };
+
+          var removeByRemoteId = function(remoteId) {
+            var item = remoteIds[remoteId];
+            remove(item);
+          };
+
+          this.syncItem = function(remoteId) {
+            resource.get(query(idProperty, remoteId), function(item) {
+              add(item);
+            }, function(err) {
+              if(err.status === 404 && remoteIds[remoteId]) {
+                // If it exists locally, assume it was deleted on the other end
+                removeByRemoteId(remoteId);
+              }
+
+            });
+          };
+
+          var initialLoad = true;
+          this.onData = function(data) {
+            if(initialLoad) {
+              self.suppressEvents(true);
+              initialLoad = false;
+            }
+
+            // All items are to be removed unless they exist on the other end
+            // - keep track of them here
             var toRemove = angular.copy(remoteIds);
+
             angular.forEach(data, function(item) {
               var itemId = item[idProperty];
-              var localItem = remoteIds[item[itemId]];
-
-              // New item from remote - add it to store
-              if(!localItem) {
-                var storeItem = new SyncStoreItem(item, idProperty);
-                localIds[storeItem._local_id] = storeItem;
-
-                $rootScope.stores[storeId].push(storeItem);
-                remoteIds[itemId] = storeItem;
-                return;
-              }
 
               // Item still exists, don't remove it
               delete toRemove[itemId];
 
-              // Check if it was updated remote
-              if(!angular.equals(item, localItem)) {
-                // Overwrite local item
-                // TODO: Check timestamp property and
-                //       select latest object
-                localItem.update(item).setUpdated();
-              }
+              add(item);
             });
 
             // Remove those deleted remotely
             angular.forEach(toRemove, function(item, localId) {
-              delete remoteIds[item[idProperty]];
-              delete localIds[localId];
+              remove(item);
             });
+
+            self.suppressEvents(false);
           };
 
           var watcher = function(newValue, oldValue) {
@@ -213,7 +274,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
                 }
               } else {
                 // New item, add to toCreate list
-                var newItem = new SyncStoreItem(item, idProperty);
+                var newItem = new SyncStoreItem(item, self);
                 $rootScope.stores[storeId][index] = newItem;
                 localIds[newItem._local_id] = newItem;
                 toCreate[newItem._local_id] = newItem;
@@ -249,15 +310,16 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
           // Watch for changes, debounce to 3 secs
           $rootScope.$watch('stores.' + this.storeId, _debounce(watcher, 3000, true), true);
+        }
 
-          // Do initial resource load
+        SyncStore.prototype.load = function() {
           this.resource.query({
             limit: this.threshold,
             offset: 0
-          }, onData, function(err) {
-            self.emit('err', err);
+          }, this.onData, function(err) {
+            self.emit('error', err);
           });
-        }
+        };
 
         SyncStore.prototype.on = function(name, fn) {
           this._listeners[name] = this._listeners[name] || [];
@@ -274,10 +336,19 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
         };
 
         SyncStore.prototype.emit = function(name) {
+          if(this._suppressEvents) return;
+
           var eventArgs = Array.prototype.slice.call(arguments, 1);
+
+          // TODO: store event args in array and debounce
+          // event listener actions by about 2-3 seconds
           for(var i in this._listeners[name]) {
             this._listeners[name][i].apply(this, eventArgs);
           }
+        };
+
+        SyncStore.prototype.suppressEvents = function(flag) {
+          this._suppressEvents = flag === undefined ? !this._suppressEvents : !!flag;
         };
 
         function syncStoreFactory(params) {
